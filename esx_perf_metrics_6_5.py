@@ -12,6 +12,7 @@ import sys
 import argparse
 import json
 import socket
+import logging
 
 from pyVim import connect
 from pyVmomi import vim
@@ -28,10 +29,6 @@ from metadata_cache import MetadataCache, MetadataNotFoundError
 VCENTER_REALTIME_INTERVAL = 20
 # Threadpool size
 DEFAULT_THREADSIZE_POOL = 4
-# Entities refresh interval
-REFRESH_MORLIST_INTERVAL = 3 * 60
-# Metrics metadata refresh interval
-REFRESH_METRICS_METADATA_INTERVAL = 10 * 60
 # Simultaneous objects processed by the QueryPref method.
 BATCH_MORLIST_SIZE = 50
 # Maximum number of objects to collect at once by the propertyCollector.
@@ -77,40 +74,32 @@ class VSphereMetrics():
 
     def __init__(self, init_config, instance):
 
-        try:
-            logfilename = instance.log_file_prefix + "_" + str(datetime.now().timestamp()) + ".log"
-            self.logfile = open(logfilename, 'w+')
-        except Exception as e:
-            print("Unable to open logfile %s:: Error:: %s" % (logfilename, e))
-            sys.exit("Unable to open logfile %s:: Error:: %s" % (logfilename, e))
+        logfilename = instance.log_file_prefix + "_" + str(datetime.now().timestamp()) + ".log"
+        self.logger = logging.getLogger("metrics")
+        self.logger.setLevel(logging.INFO)
+        fh = logging.FileHandler(logfilename)
+        fh.setLevel(logging.INFO)
+        formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+        fh.setFormatter(formatter)
+        self.logger.addHandler(fh)
 
         self.time_started = time.time()
         self.pool_started = False
         self.except_queue = Queue()
 
-        self.batch_morlist_size = max(init_config['CONFIG']['BATCH_MORLIST_SIZE'], BATCH_MORLIST_SIZE)
-        self.batch_collector_size = max(init_config['CONFIG']['BATCH_COLLECTOR_SIZE'], BATCH_COLLECTOR_SIZE)
+        self.batch_collector_size = BATCH_COLLECTOR_SIZE
 
-        if init_config['CONFIG']['REFRESH_MORLIST_INTERVAL'] is not None:
-            self.refresh_morlist_interval = init_config['CONFIG']['REFRESH_MORLIST_INTERVAL']
+        if init_config['CONFIG']['BATCH_MORLIST_SIZE'] is not None:
+            self.batch_morlist_size = init_config['CONFIG']['BATCH_MORLIST_SIZE']
         else:
-            self.refresh_morlist_interval = REFRESH_MORLIST_INTERVAL
-        self.clean_morlist_interval = max(init_config['CONFIG']['CLEAN_MORLIST_INTERVAL'], 2 * self.refresh_morlist_interval)
+            self.batch_morlist_size = BATCH_MORLIST_SIZE
 
-        if init_config['CONFIG']['REFRESH_METRICS_METADATA_INTERVAL'] is not None:
-            self.refresh_metrics_metadata_interval = init_config['CONFIG']['REFRESH_METRICS_METADATA_INTERVAL']
-        else:
-            self.refresh_metrics_metadata_interval = REFRESH_METRICS_METADATA_INTERVAL
-
-        if init_config['CONFIG']['DEFAULT_THREADSIZE_POOL'] is not None:
-            self.pool_size = init_config['CONFIG']['DEFAULT_THREADSIZE_POOL']
+        if init_config['CONFIG']['THREADSIZE_POOL'] is not None:
+            self.pool_size = init_config['CONFIG']['THREADSIZE_POOL']
         else:
             self.pool_size = DEFAULT_THREADSIZE_POOL
 
-        if init_config['CONFIG']['COLLECTION_LEVEL'] is not None:
-            self.collection_level = init_config['CONFIG']['COLLECTION_LEVEL']
-        else:
-            self.collection_level = DEFAULT_COLLECTION_LEVEL
+        self.collection_level = DEFAULT_COLLECTION_LEVEL
 
         if init_config['CONFIG']['SSL_VERIFY'] is not None:
             self.ssl_verify = init_config['CONFIG']['SSL_VERIFY']
@@ -132,9 +121,7 @@ class VSphereMetrics():
         # build up configurations
         # for instance in instances:
         i_key = self._instance_key(instance)
-        # caches
-        self.cache_config.set_interval(CacheConfig.Morlist, i_key, self.refresh_morlist_interval)
-        self.cache_config.set_interval(CacheConfig.Metadata, i_key, self.refresh_metrics_metadata_interval)
+
         # Queue of raw Mor objects to process
         self.mor_objects_queue = ObjectsQueue()
 
@@ -159,8 +146,7 @@ class VSphereMetrics():
                     beginTime = datetime.strptime(line, '%Y-%m-%d %H:%M:%S.%f')
                     break
         except Exception as e:
-            print('Time log not found, will get metrics 1 day back.', e)
-            self.logfile.write(e + 'Time log not found, will get metrics 1 day back.\n' )
+            self.logger.info('Time log not found, will get metrics 1 day back.' + str(e) + '\n' )
 
         return beginTime, endTime
 
@@ -170,13 +156,13 @@ class VSphereMetrics():
             timestampFile.close()
 
     def start_pool(self):
-        self.logfile.write("Starting Thread Pool\n")
+        self.logger.info("Starting Thread Pool\n")
         self.pool = Pool(self.pool_size)
         self.pool_started = True
-        self.logfile.write("Pool Size:::" + str(self.pool_size) + "\n")
+        self.logger.info("Pool Size:::" + str(self.pool_size) + "\n")
 
     def stop_pool(self):
-        self.logfile.write("Stopping Thread Pool\n")
+        self.logger.info("Stopping Thread Pool\n")
         if self.pool_started:
             self.pool.terminate()
             self.pool.join()
@@ -186,7 +172,7 @@ class VSphereMetrics():
     def _instance_key(self, instance):
         i_key = instance.host
         if i_key is None:
-            self.logfile.write("Must define a unique 'hostname' per vCenter instance\n")
+            sself.logger.critical("Must define a unique 'hostname' per vCenter instance\n")
             sys.exit("Must define a unique 'hostname' per vCenter instance")
         return i_key
 
@@ -207,7 +193,7 @@ class VSphereMetrics():
             context.load_verify_locations(capath=ssl_capath)
 
         if ssl_verify == 'False' and ssl_capath != "":
-            self.logfile.write("Incorrect configuration, proceeding with ssl verification disabled.\n")
+            self.logger.info("Incorrect configuration, proceeding with ssl verification disabled.\n")
 
         password = instance.password
 
@@ -226,9 +212,8 @@ class VSphereMetrics():
             )
         except Exception as e:
             err_msg = "Connection to {} failed: {}\n".format(instance.host, e)
+            self.logger.critical(err_msg)
             sys.exit(err_msg)
-            self.logfile.write(err_msg)
-            print(err_msg)
 
         # Verify permissions
         try:
@@ -237,9 +222,8 @@ class VSphereMetrics():
             err_msg = (
                 "Connection established: {}, but the user : {} lacks appropriate permissions.\n"
             ).format(instance.host, instance.username, e)
+            self.logger.critical(err_msg)
             sys.exit(err_msg)
-            self.logfile.write(err_msg)
-            print(err_msg)
 
         return server_instance
 
@@ -271,7 +255,7 @@ class VSphereMetrics():
             counter_id = metric.counterId
             # No cache yet, skip it for now
             if not self.metadata_cache.contains(i_key, counter_id):
-                self.logfile.write("No metadata found for counter {}, will not collect it\n".format(counter_id))
+                self.logger.info("No metadata found for counter {}, will not collect it\n".format(counter_id))
                 continue
             metadata = self.metadata_cache.get_metadata(i_key, counter_id)
             if metadata.get('name') in BASIC_METRICS:
@@ -336,11 +320,11 @@ class VSphereMetrics():
             if obj.missingSet and error_counter < 10:
                 for prop in obj.missingSet:
                     error_counter += 1
-                    self.logfile.write(
+                    self.logger.error(
                         "Unable to retrieve property {} for object {}: {}\n".format(prop.path, obj.obj, prop.fault)
                     )
                     if error_counter == 10:
-                        self.logfile.write("Too many errors during object collection, stop logging\n")
+                        self.logger.info("Too many errors during object collection, stop logging\n")
                         break
             mor_attrs[obj.obj] = {prop.name: prop.val for prop in obj.propSet} if obj.propSet else {}
 
@@ -372,7 +356,7 @@ class VSphereMetrics():
                     mor_type = "vm"
                     power_state = properties.get("runtime.powerState")
                     if power_state != vim.VirtualMachinePowerState.poweredOn:
-                        self.logfile.write("Skipping VM in state {}\n".format(power_state))
+                        self.logger.info("Skipping VM in state {}\n".format(power_state))
                         continue
                 elif isinstance(obj, vim.HostSystem):
                     vimtype = vim.HostSystem
@@ -392,7 +376,7 @@ class VSphereMetrics():
                     "hostname": hostname
                 })
 
-        self.logfile.write("All objects with attributes cached in {} seconds.\n".format(time.time() - start))
+        self.logger.info("All objects with attributes cached in {} seconds.\n".format(time.time() - start))
         return obj_list
 
     def _get_morlist(self, instance):
@@ -400,13 +384,13 @@ class VSphereMetrics():
         Fill the Mor objects, determine vcenter, virtual machines, hosts and datacenters
         """
         i_key = self._instance_key(instance)
-        self.logfile.write("Caching the morlist for vcenter instance " + i_key + "\n")
+        self.logger.info("Caching the morlist for vcenter instance " + i_key + "\n")
 
         # If the queue is not completely empty, don't do anything
         for resource_type in RESOURCE_TYPE_METRICS:
             if self.mor_objects_queue.contains(i_key) and self.mor_objects_queue.size(i_key, resource_type):
                 last = self.cache_config.get_last(CacheConfig.Morlist, i_key)
-                self.logfile.write("Skipping morlist collection: the objects queue for the "
+                self.logger.info("Skipping morlist collection: the objects queue for the "
                                "resource type '{}' is still being processed "
                                "(latest refresh was {}s ago)\n".format(resource_type, time.time() - last))
                 return
@@ -424,7 +408,7 @@ class VSphereMetrics():
         i_key = self._instance_key(instance)
         self.mor_cache.init_instance(i_key)
         if not self.mor_objects_queue.contains(i_key):
-            self.logfile.write("Objects queue is not initialized yet for instance {}, skipping processing\n".format(i_key))
+            self.logger.info("Objects queue is not initialized yet for instance {}, skipping processing\n".format(i_key))
             return
 
         for resource_type in RESOURCE_TYPE_METRICS:
@@ -436,7 +420,7 @@ class VSphereMetrics():
                 for _ in range(batch_size):
                     mor = self.mor_objects_queue.pop(i_key, resource_type)
                     if mor is None:
-                        self.logfile.write("No more objects of type '{}' left in the queue\n".format(resource_type))
+                        self.logger.info("No more objects of type '{}' left in the queue\n".format(resource_type))
                         break
 
                     mor_name = str(mor['mor'])
@@ -468,8 +452,7 @@ class VSphereMetrics():
 
                             self.mor_cache.set_metrics(i_key, mor_name, self._compute_needed_metrics(instance, available_metrics))
                         except MorNotFoundError:
-                            print("Object '{}' is missing from the cache, skipping. ".format(mor_name))
-                            self.logfile.write("Object '{}' is missing from the cache, skipping.\n".format(mor_name))
+                            self.logger.info("Object '{}' is missing from the cache, skipping.\n".format(mor_name))
                             continue
 
     def _get_metrics_metadata(self, instance):
@@ -479,7 +462,7 @@ class VSphereMetrics():
 
         i_key = self._instance_key(instance)
         self.metadata_cache.init_instance(i_key)
-        self.logfile.write("Warming metrics metadata cache for instance {}\n".format(i_key))
+        self.logger.info("Warming metrics metadata cache for instance {}\n".format(i_key))
         server_instance = self._get_server_instance(instance)
         perfManager = server_instance.content.perfManager
 
@@ -495,7 +478,7 @@ class VSphereMetrics():
             if metric_name in BASIC_METRICS:
                 metric_ids.append(vim.PerformanceManager.MetricId(counterId=counter.key, instance="*"))
 
-        self.logfile.write("Finished metadata collection for instance {}\n".format(i_key))
+        self.logger.info("Finished metadata collection for instance {}\n".format(i_key))
         # Reset metadata
         self.metadata_cache.set_metadata(i_key, new_metadata)
 
@@ -530,14 +513,14 @@ class VSphereMetrics():
         try:
             targetSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         except socket.error as err:
+            self.logger.critical(" Socket creation failed with error %s" % (err))
             sys.exit(" Socket creation failed with error %s" % (err))
-            print(" Socket creation failed with error %s" % (err))
 
         try:
             # connecting to the server
             targetSocket.connect((instance.target, int(instance.targetPort)))
         except socket.error as err:
-            print("The socket failed to connect to server%s" % (err))
+            self.logger.critical("The socket failed to connect to server%s" % (err))
             sys.exit("Target server connection failed with error %s" % (err))
 
         i_key = self._instance_key(instance)
@@ -552,14 +535,14 @@ class VSphereMetrics():
                 try:
                     mor = self.mor_cache.get_mor(i_key, mor_name)
                 except MorNotFoundError:
-                    print("Trying to get metrics from object %s deleted from the cache, skipping. ", mor_name)
+                    self.logger.info("Trying to get metrics from object %s deleted from the cache, skipping. ", mor_name)
                     continue
 
                 for result in mor_perfs.value:
                     output_string = ""
                     counter_id = result.id.counterId
                     if not self.metadata_cache.contains(i_key, counter_id):
-                        print(
+                        self.logger.info(
                             "Skipping value for counter {}, because there is no metadata about it".format(counter_id)
                         )
                         continue
@@ -567,7 +550,7 @@ class VSphereMetrics():
                     # Metric types are absolute, delta, and rate
                     metric_name = self.metadata_cache.get_metadata(i_key, result.id.counterId).get('name')
                     if not result.value:
-                        print("Skipping `{}` metric because the value is empty".format(metric_name))
+                        self.logger.info("Skipping `{}` metric because the value is empty".format(metric_name))
                         continue
 
                     value = self._transform_value(instance, result.id.counterId, result.value[0])
@@ -596,7 +579,7 @@ class VSphereMetrics():
         """
         i_key = self._instance_key(instance)
         if not self.mor_cache.contains(i_key):
-            self.logfile.write("Not collecting metrics for instance '{}'.\n".format(i_key))
+            self.logger.info("Not collecting metrics for instance '{}'.\n".format(i_key))
             return
 
         vm_count = 0
@@ -605,11 +588,12 @@ class VSphereMetrics():
         if not n_mors:
             return
 
-        self.logfile.write("Collecting metrics for {} managed objects\n".format(n_mors))
+        self.logger.info("Collecting metrics for {} managed objects\n".format(n_mors))
 
         # Request metrics for several objects at once. We can limit the number of objects with batch_size
         # If batch_size is 0, process everything at once
         beginTime, endTime = self.prepareQueryTimeRange(instance.tsFileName)
+
         batch_size = self.batch_morlist_size or n_mors
         for batch in self.mor_cache.mors_batch(i_key, batch_size):
             query_specs = []
@@ -634,14 +618,14 @@ class VSphereMetrics():
             if query_specs:
                 self.pool.apply_async(self._collect_metrics_async, args=(instance, query_specs))
         self.updateLastReadTime(endTime, instance.tsFileName)
-        self.logfile.write('vsphere.vm.count' + str(vm_count) + '\n')
+        self.logger.info('VM Count::' + str(vm_count) + '\n')
 
     def get_metrics(self, instance):
 
         if not self.pool_started:
             self.start_pool()
 
-        self.logfile.write('queue_size', self.pool._workq.qsize())
+        self.logger.info('Queue Size::' + str(self.pool._workq.qsize()) + "\n")
         self._get_metrics_metadata(instance)
 
         self._get_morlist(instance)
@@ -660,19 +644,14 @@ class VSphereMetrics():
 
         if thread_crashed:
             self.stop_pool()
-            print("One thread in the pool crashed, check the logs")
-            self.logfile.write("One thread in the pool crashed, check the logs\n")
+            self.logger.critical("One thread in the pool crashed, check the logs\n")
             sys.exit("One thread in the pool crashed, check the logs")
 
-        """
         while True:
             if self.pool._workq.qsize() == 0:
                 self.stop_pool()
-                if self.logfile:
-                    self.logfile.write("Process complete.\n")
-                    self.logfile.close()
+                self.logger.info("Process complete.\n")
                 sys.exit("Process complete.")
-        """
 
 
 def setup_args():
@@ -727,7 +706,7 @@ def setup_args():
     parser.add_argument('-ts', '--tsFileName',
                         required=False,
                         action='store',
-                        help='Timestamp File', default='timelog_metrics')
+                        help='Timestamp File', default='.timelog_metrics')
 
     parser.add_argument('-l', '--log_file_prefix',
                         required=False,
@@ -753,9 +732,7 @@ def main():
             sys.exit("Unable to open %s::%s" % (args.config_file, e))
 
     vSphereMetrics = VSphereMetrics(config, args)
-    while True:
-        vSphereMetrics.get_metrics(args)
-        time.sleep(120)
+    vSphereMetrics.get_metrics(args)
 
 
 if __name__ == '__main__':

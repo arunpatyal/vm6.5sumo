@@ -72,7 +72,7 @@ def setup_args():
     parser.add_argument('-ts', '--timestampFile',
                         required=False,
                         action='store',
-                        help='Timestamp File.', default='timelog_events')
+                        help='Timestamp File.', default='.timelog_events')
 
     parser.add_argument('-t', '--target',
                         required=False,

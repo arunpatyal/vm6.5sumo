@@ -27,7 +27,7 @@ from metadata_cache import MetadataCache, MetadataNotFoundError
 
 # vCenter sampling interval
 VCENTER_REALTIME_INTERVAL = 20
-# Threadpool size
+# Default Threadpool size
 DEFAULT_THREADSIZE_POOL = 4
 # Simultaneous objects processed by the QueryPref method.
 BATCH_MORLIST_SIZE = 50
@@ -55,21 +55,20 @@ RESOURCE_TYPE_NO_METRIC = [
 def trace_method(method):
     """
     Method to catch asynchronous method failures.
-    Note: this should be applied to methods of VSphereMetrics only!
     """
     def wrapper(*args, **kwargs):
         try:
             method(*args, **kwargs)
         except Exception:
-            args[0].except_queue.put("A worker thread crashed:\n" + traceback.format_exc())
-            print("A worker thread crashed:\n", traceback.format_exc())
+            args[0].except_queue.put("A thread crashed:\n" + traceback.format_exc())
+            print("A thread crashed:\n", traceback.format_exc())
     return wrapper
 
 
 class VSphereMetrics():
     """
     Sumo Logic class to get performance metrics from a vCenter server.
-    The scripts spits out a log file which is ingested by the sumo logic collector.
+    The scripts spits out metrics which are ingested by the sumo logic collector.
     """
 
     def __init__(self, init_config, instance):
@@ -111,21 +110,18 @@ class VSphereMetrics():
         else:
             self.ssl_capath = None
 
-        # Connections open to vCenter instances
+        # Connections to vCenter instances
         self.server_instances = {}
         self.server_instances_lock = threading.RLock()
 
-        # Caching configuration
+        # Caching
         self.cache_config = CacheConfig()
 
         # build up configurations
-        # for instance in instances:
-        i_key = self._instance_key(instance)
-
         # Queue of raw Mor objects to process
         self.mor_objects_queue = ObjectsQueue()
 
-        # Cache of processed Mor objects
+        # Cache of processed managed object reference objects
         self.mor_cache = MorCache()
 
         # managed entity raw view
@@ -133,7 +129,6 @@ class VSphereMetrics():
 
         # Metrics metadata, for each instance keeps the mapping: perfCounterKey -> {name, group, description}
         self.metadata_cache = MetadataCache()
-
 
     def prepareQueryTimeRange(self, tsFileName):
 
@@ -172,12 +167,12 @@ class VSphereMetrics():
     def _instance_key(self, instance):
         i_key = instance.host
         if i_key is None:
-            sself.logger.critical("Must define a unique 'hostname' per vCenter instance\n")
+            self.logger.critical("Must define a unique 'hostname' per vCenter instance\n")
             sys.exit("Must define a unique 'hostname' per vCenter instance")
         return i_key
 
     def _connect_to_server(self, instance):
-        # Check for ssl configs and generate an appropriate ssl context object
+        # Determine ssl configs and generate an appropriate ssl context object
         if self.ssl_verify is not None:
             ssl_verify = self.ssl_verify
 
@@ -215,7 +210,7 @@ class VSphereMetrics():
             self.logger.critical(err_msg)
             sys.exit(err_msg)
 
-        # Verify permissions
+        # Check permissions
         try:
             server_instance.CurrentTime()
         except Exception as e:
@@ -234,18 +229,18 @@ class VSphereMetrics():
             if i_key not in self.server_instances:
                 self.server_instances[i_key] = self._connect_to_server(instance)
 
-            # Test if the connection is working
+            # Test connection
             try:
                 self.server_instances[i_key].CurrentTime()
             except Exception:
-                # Try to reconnect. If the connection is definitely broken, it will raise an excpetion and exit.
+                # Try to reconnect. If the connection is definitely broken, it will raise an exception and exit.
                 self.server_instances[i_key] = self._connect_to_server(instance)
 
             return self.server_instances[i_key]
 
-    def _compute_needed_metrics(self, instance, available_metrics):
+    def _determine_needed_metrics(self, instance, available_metrics):
         """
-        Determine what metrics we want to report.
+        Filter to determine what metrics we want to report.
         """
 
         i_key = self._instance_key(instance)
@@ -263,22 +258,21 @@ class VSphereMetrics():
 
         return wanted_metrics
 
-    def _collect_mors_and_attributes(self, server_instance):
+    def _retrieve_managed_objects_and_attr(self, server_instance):
         resources = RESOURCE_TYPE_METRICS + RESOURCE_TYPE_NO_METRIC
 
         content = server_instance.content
         view_ref = content.viewManager.CreateContainerView(content.rootFolder, resources, True)
 
-        # Object used to query MORs as well as the attributes we require in one API call
         # See https://code.vmware.com/apis/358/vsphere#/doc/vmodl.query.PropertyCollector.html
         collector = content.propertyCollector
 
-        # Specify the root object from where we collect the rest of the objects
+        # Specify root object
         obj_spec = vmodl.query.PropertyCollector.ObjectSpec()
         obj_spec.obj = view_ref
         obj_spec.skip = True
 
-        # Specify the attribute of the root object to traverse to obtain all the attributes
+        # Mention the attribute of the root object
         traversal_spec = vmodl.query.PropertyCollector.TraversalSpec()
         traversal_spec.path = "view"
         traversal_spec.skip = False
@@ -286,7 +280,7 @@ class VSphereMetrics():
         obj_spec.selectSet = [traversal_spec]
 
         property_specs = []
-        # Specify which attributes we want to retrieve per object
+        # Which attributes we want to retrieve per object
         for resource in resources:
             property_spec = vmodl.query.PropertyCollector.PropertySpec()
             property_spec.type = resource
@@ -296,17 +290,16 @@ class VSphereMetrics():
                 property_spec.pathSet.append("runtime.host")
             property_specs.append(property_spec)
 
-        # Create our filter spec from the above specs
+        # Create final filter spec
         filter_spec = vmodl.query.PropertyCollector.FilterSpec()
         filter_spec.objectSet = [obj_spec]
         filter_spec.propSet = property_specs
 
         retr_opts = vmodl.query.PropertyCollector.RetrieveOptions()
-        # To limit the number of objects retrieved per call.
         # If batch_collector_size is 0, collect maximum number of objects.
         retr_opts.maxObjects = self.batch_collector_size or None
 
-        # Collect the objects and their properties
+        # Retrieve the objects and their properties
         res = collector.RetrievePropertiesEx([filter_spec], retr_opts)
         objects = res.objects
         # Results can be paginated
@@ -330,18 +323,18 @@ class VSphereMetrics():
 
         return mor_attrs
 
-    def _get_all_objs(self, server_instance):
+    def _get_all_managed_objects(self, server_instance):
         """
-        Explore vCenter infrastructure to discover hosts, virtual machines and
+        Determine vCenter infrastructure to find out hosts, virtual machines and
         put them in a queue to be processed asynchronously.
         """
         start = time.time()
         obj_list = defaultdict(list)
 
-        # Collect objects and their attributes
-        all_objects = self._collect_mors_and_attributes(server_instance)
+        # Objects and their attributes
+        all_objects = self._retrieve_managed_objects_and_attr(server_instance)
 
-        # Add rootFolder since it is not explored by the propertyCollector
+        # Include rootFolder since it is not explored by the propertyCollector
         rootFolder = server_instance.content.rootFolder
         all_objects[rootFolder] = {"name": rootFolder.name, "parent": None}
 
@@ -379,9 +372,9 @@ class VSphereMetrics():
         self.logger.info("All objects with attributes cached in {} seconds.\n".format(time.time() - start))
         return obj_list
 
-    def _get_morlist(self, instance):
+    def _get_managed_obj_refer_list(self, instance):
         """
-        Fill the Mor objects, determine vcenter, virtual machines, hosts and datacenters
+        FInd out the Mor objects, determine vcenter, virtual machines, hosts and datacenters
         """
         i_key = self._instance_key(instance)
         self.logger.info("Caching the morlist for vcenter instance " + i_key + "\n")
@@ -396,14 +389,14 @@ class VSphereMetrics():
                 return
 
         server_instance = self._get_server_instance(instance)
-        all_objs = self._get_all_objs(server_instance)
+        all_objs = self._get_all_managed_objects(server_instance)
         self.mor_objects_queue.fill(i_key, dict(all_objs))
 
         self.cache_config.set_last(CacheConfig.Morlist, i_key, time.time())
 
-    def _process_mor_objects_queue(self, instance):
+    def _process_managed_objects_queue(self, instance):
         """
-        Pops `batch_morlist_size` items from the mor objects queue to fill the Mor cache.
+        Retrieves `batch_morlist_size` items from the mor objects queue to fill the Mor cache.
         """
         i_key = self._instance_key(instance)
         self.mor_cache.init_instance(i_key)
@@ -412,7 +405,6 @@ class VSphereMetrics():
             return
 
         for resource_type in RESOURCE_TYPE_METRICS:
-            # Batch size can prevent querying large payloads at once if the environment is too large
             # If batch size is set to 0, process everything at once
             batch_size = self.batch_morlist_size or self.mor_objects_queue.size(i_key, resource_type)
             while self.mor_objects_queue.size(i_key, resource_type):
@@ -438,7 +430,7 @@ class VSphereMetrics():
                         query_spec.maxSample = 1
                         query_specs.append(query_spec)
 
-                # We will actually schedule jobs for non realtime resources only.
+                # Schedule jobs for non realtime resources only.
                 if query_specs:
                     i_key = self._instance_key(instance)
                     server_instance = self._get_server_instance(instance)
@@ -450,14 +442,14 @@ class VSphereMetrics():
                         available_metrics = [value.id for value in mor_perfs.value]
                         try:
 
-                            self.mor_cache.set_metrics(i_key, mor_name, self._compute_needed_metrics(instance, available_metrics))
+                            self.mor_cache.set_metrics(i_key, mor_name, self._determine_needed_metrics(instance, available_metrics))
                         except MorNotFoundError:
                             self.logger.info("Object '{}' is missing from the cache, skipping.\n".format(mor_name))
                             continue
 
-    def _get_metrics_metadata(self, instance):
+    def _get_vcenter_metrics_metadata(self, instance):
         """
-        Get all the performance counters metadata meaning name/group/description...
+        Find out all the performance counters metadata meaning name/group/description...
         """
 
         i_key = self._instance_key(instance)
@@ -505,8 +497,9 @@ class VSphereMetrics():
         return value
 
     @trace_method
-    def _collect_metrics_async(self, instance, query_specs):
-        """ Task that collects the metrics listed in the morlist for one MOR
+    def _collect_vcenter_metrics_async(self, instance, query_specs):
+        """
+        This procedure collects the metrics listed in the morlist for one MOR
         """
         # Prepare socket to send
         targetSocket = None
@@ -573,9 +566,9 @@ class VSphereMetrics():
             targetSocket.close()
         return
 
-    def collect_metrics(self, instance):
+    def collect_vcenter_metrics(self, instance):
         """
-        Calls asynchronously _collect_metrics_async on all objects.
+        Calls asynchronously _collect_vcenter_metrics_async on all objects.
         """
         i_key = self._instance_key(instance)
         if not self.mor_cache.contains(i_key):
@@ -616,7 +609,7 @@ class VSphereMetrics():
                 query_specs.append(query_spec)
 
             if query_specs:
-                self.pool.apply_async(self._collect_metrics_async, args=(instance, query_specs))
+                self.pool.apply_async(self._collect_vcenter_metrics_async, args=(instance, query_specs))
         self.updateLastReadTime(endTime, instance.tsFileName)
         self.logger.info('VM Count::' + str(vm_count) + '\n')
 
@@ -626,13 +619,13 @@ class VSphereMetrics():
             self.start_pool()
 
         self.logger.info('Queue Size::' + str(self.pool._workq.qsize()) + "\n")
-        self._get_metrics_metadata(instance)
+        self._get_vcenter_metrics_metadata(instance)
 
-        self._get_morlist(instance)
+        self._get_managed_obj_refer_list(instance)
 
-        self._process_mor_objects_queue(instance)
+        self._process_managed_objects_queue(instance)
 
-        self.collect_metrics(instance)
+        self.collect_vcenter_metrics(instance)
 
         thread_crashed = False
         try:
@@ -644,8 +637,8 @@ class VSphereMetrics():
 
         if thread_crashed:
             self.stop_pool()
-            self.logger.critical("One thread in the pool crashed, check the logs\n")
-            sys.exit("One thread in the pool crashed, check the logs")
+            self.logger.critical("A thread in the pool crashed, check the logs\n")
+            sys.exit("A thread in the pool crashed, check the logs")
 
         while True:
             if self.pool._workq.qsize() == 0:

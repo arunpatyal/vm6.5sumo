@@ -251,7 +251,7 @@ def main():
             if outputFile is not None:
                 outputFile.write(packetContent)
             if targetSocket is not None:
-                targetSocket.send(packetContent)
+                targetSocket.send(packetContent.encode())
 
     logfile.write(logPrefix + "%s events collected.\n" % (evtCount))
 

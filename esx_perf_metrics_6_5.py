@@ -507,14 +507,14 @@ class VSphereMetrics():
             targetSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         except socket.error as err:
             self.logger.critical(" Socket creation failed with error %s" % (err))
-            sys.exit(" Socket creation failed with error %s" % (err))
+            return
 
         try:
             # connecting to the server
             targetSocket.connect((instance.target, int(instance.targetPort)))
         except socket.error as err:
             self.logger.critical("The socket failed to connect to server%s" % (err))
-            sys.exit("Target server connection failed with error %s" % (err))
+            return
 
         i_key = self._instance_key(instance)
         server_instance = self._get_server_instance(instance)

@@ -4,8 +4,6 @@ import threading
 class ObjectsQueue:
     """
     Implements a queue to store Mor objects of any type for each instance.
-    Objects are fill once in batch and then extracted one by one.
-    The queue is thread safe.
     """
     def __init__(self):
         self._objects_queue = {}
@@ -25,7 +23,6 @@ class ObjectsQueue:
     def size(self, key, resource_type):
         """
         Return the size of the queue for a given key and resource type.
-        If the key is not in the cache, this will raise a KeyError.
         """
         with self._objects_queue_lock:
             return len(self._objects_queue[key].get(resource_type, []))
@@ -33,7 +30,6 @@ class ObjectsQueue:
     def pop(self, key, resource_type):
         """
         Extract an object from the list.
-        If the key is not in the cache, this will raise a KeyError.
         If the list is empty, method will return None
         """
         with self._objects_queue_lock:

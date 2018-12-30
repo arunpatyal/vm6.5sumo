@@ -1,26 +1,10 @@
-## {{{ http://code.activestate.com/recipes/576519/ (r9)
-# Author: David Decotigny, Oct 1 2008
-# @brief Pool of threads similar to multiprocessing.Pool
-# See http://docs.python.org/dev/library/multiprocessing.html
-# Differences: added imap_async and imap_unordered_async, and terminate()
-# has to be called explicitly (it's not registered by atexit).
-#
 # The general idea is that we submit works to a workqueue, either as
 # single Jobs (one function to call), or JobSequences (batch of
 # Jobs). Each Job is associated with an ApplyResult object which has 2
 # states: waiting for the Job to complete, or Ready. Instead of
 # waiting for the jobs to finish, we wait for their ApplyResult object
 # to become ready: an event mechanism is used for that.
-# When we apply a function to several arguments in "parallel", we need
-# a way to wait for all/part of the Jobs to be processed: that's what
-# "collectors" are for; they group and wait for a set of ApplyResult
-# objects. Once a collector is ready to be used, we can use a
-# CollectorIterator to iterate over the result values it's collecting.
-#
-# The methods of a Pool object use all these concepts and expose
-# them to their caller in a very simple way.
 
-# flake8: noqa
 
 import sys
 import threading
@@ -68,16 +52,10 @@ class PoolWorker(threading.Thread):
 
 class Pool(object):
     """
-    The Pool class represents a pool of worker threads. It has methods
-    which allows tasks to be offloaded to the worker processes in a
-    few different ways
+    The Pool class represents a pool of worker threads.
     """
 
     def __init__(self, nworkers, name="Pool"):
-        """
-        \param nworkers (integer) number of worker threads to start
-        \param name (string) prefix for the worker threads' name
-        """
         self._workq = queue.Queue()
         self._closed = False
         self._workers = []

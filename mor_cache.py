@@ -10,32 +10,23 @@ class MorNotFoundError(Exception):
 class MorCache:
     """
     Implements a thread safe storage for Mor objects.
-    For each instance key, the cache maps: mor_name --> mor_dict_object
     """
     def __init__(self):
         self._mor = {}
         self._mor_lock = threading.RLock()
 
     def init_instance(self, key):
-        """
-        Create an empty instance if it doesn't exist.
-        If the instance already exists, this is a noop.
-        """
         with self._mor_lock:
             if key not in self._mor:
                 self._mor[key] = {}
 
     def contains(self, key):
-        """
-        Return whether an instance key is present.
-        """
         with self._mor_lock:
             return key in self._mor
 
     def instance_size(self, key):
         """
         Return how many Mor objects are stored for the given instance.
-        If the key is not in the cache, raises a KeyError.
         """
         with self._mor_lock:
             return len(self._mor[key])
@@ -43,7 +34,6 @@ class MorCache:
     def set_mor(self, key, name, mor):
         """
         Store a Mor object in the cache with the given name.
-        If the key is not in the cache, raises a KeyError.
         """
         with self._mor_lock:
             self._mor[key][name] = mor
@@ -52,8 +42,6 @@ class MorCache:
     def get_mor(self, key, name):
         """
         Return the Mor object identified by `name` for the given instance key.
-        If the key is not in the cache, raises a KeyError.
-        If there's no Mor with the given name, raises a MorNotFoundError.
         """
         with self._mor_lock:
             mors = self._mor[key]
@@ -66,8 +54,6 @@ class MorCache:
         """
         Store a list of metric identifiers for the given instance key and Mor
         object name.
-        If the key is not in the cache, raises a KeyError.
-        If the Mor object is not in the cache, raises a MorNotFoundError
         """
         with self._mor_lock:
             mor = self._mor[key].get(name)
@@ -86,12 +72,7 @@ class MorCache:
     def mors_batch(self, key, batch_size):
         """
         Generator returning as many dictionaries containing `batch_size` Mor
-        objects as needed to iterate all the content of the cache. This has
-        to be iterated twice, like:
-
-            for batch in cache.mors_batch('key', 100):
-                for name, mor in batch:
-                    # use the Mor object here
+        objects as needed to iterate all the content of the cache.
         """
         with self._mor_lock:
             mors_dict = self._mor.get(key)
@@ -109,7 +90,6 @@ class MorCache:
         """
         Remove all the items in the cache for the given key that are older than
         ttl seconds.
-        If the key is not in the cache, raises a KeyError.
         """
         mors_to_purge = []
         now = time.time()

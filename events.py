@@ -12,6 +12,7 @@ import ssl
 from pyVmomi import vim
 from pyVim.connect import SmartConnect, Disconnect
 from cryptography.fernet import Fernet
+from vmware_constants import event_type_list
 
 
 def prepareQueryTimeRange(tsFileName, optBeginTime, optEndTime, logfile, logPrefix):
@@ -205,7 +206,7 @@ def main():
     separator = ",,,"
     evtCount = 0
     byTime = vim.event.EventFilterSpec.ByTime(beginTime=beginTime, endTime=endTime)
-    filterSpec = vim.event.EventFilterSpec(time=byTime)
+    filterSpec = vim.event.EventFilterSpec(eventTypeId=event_type_list, time=byTime)
     eventManager = serverConn.content.eventManager
     eventCollector = eventManager.CreateCollectorForEvents(filterSpec)
     eventCollector.RewindCollector()

@@ -5,9 +5,7 @@ from collections import defaultdict
 
 class CacheConfig:
     """
-    Wraps configuration and status for the Morlist and Metadata caches.
-    CacheConfig is threadsafe and can be used from different workers in the
-    threading pool.
+    CacheConfig is threadsafe and can be used from different workers in the threading pool.
     """
     Morlist = 0
     Metadata = 1
@@ -17,15 +15,12 @@ class CacheConfig:
         self.clear()
 
     def _check_type(self, type_):
-        """
-        Basic sanity check to avoid KeyErrors
-        """
         if type_ not in (CacheConfig.Morlist, CacheConfig.Metadata):
             raise TypeError("Wrong cache type passed")
 
     def clear(self):
         """
-        Reset the config object to its initial state
+        Reset the config
         """
         with self._lock:
             self._config = {
@@ -47,7 +42,6 @@ class CacheConfig:
     def get_last(self, type_, key):
         """
         Notice: this will return the defaultdict default value also for keys
-        that are not in the configuration, this is a tradeoff to keep the code simple.
         """
         self._check_type(type_)
         with self._lock:

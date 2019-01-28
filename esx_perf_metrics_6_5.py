@@ -93,8 +93,8 @@ class VSphereMetrics():
         else:
             self.batch_morlist_size = BATCH_MORLIST_SIZE
 
-        if init_config['CONFIG']['THREADSIZE_POOL'] is not None:
-            self.pool_size = init_config['CONFIG']['THREADSIZE_POOL']
+        if init_config['CONFIG']['DEFAULT_THREADSIZE_POOL'] is not None:
+            self.pool_size = init_config['CONFIG']['DEFAULT_THREADSIZE_POOL']
         else:
             self.pool_size = DEFAULT_THREADSIZE_POOL
 
@@ -560,7 +560,25 @@ class VSphereMetrics():
                     epoch = str(date_time.timestamp()).split('.')[0]
                     output_string = output_string + " type=" + mor['mor_type'] + " hostname=" + str(mor['hostname']).replace(" ", "_") + " vcenter=" + instance.host + "  " + str(value) + " " + str(epoch) + "\n"
                     if targetSocket is not None:
-                        targetSocket.send(output_string.encode())
+                        try:
+                            targetSocket.send(output_string.encode())
+                        except Exception:
+                            # Prepare socket to send
+                            targetSocket = None
+                            try:
+                                targetSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                            except socket.error as err:
+                                self.logger.critical(" Socket creation failed with error %s" % (err))
+                                return
+
+                            try:
+                                # connecting to the server
+                                targetSocket.connect((instance.target, int(instance.targetPort)))
+                                targetSocket.send(output_string.encode())
+                            except socket.error as err:
+                                self.logger.critical("The socket failed to connect to server%s" % (err))
+                                return
+
 
         if targetSocket is not None:
             targetSocket.close()

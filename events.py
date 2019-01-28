@@ -141,11 +141,12 @@ def main():
         logfilename = args.log_file_prefix + "_" + str(datetime.datetime.now().timestamp()) + ".log"
         logfile = open(logfilename, 'w+')
     except Exception as e:
-        sys.exit(logPrefix + "Unable to open logfile %s:: Error:: %s" % (logfilename, e))
+        sys.exit(logPrefix + "Unable to open logfile:: Error:: %s" % (e))
 
+    outputFile = None
     if args.file == "-":
         outputFile = sys.stdout
-    else:
+    elif args.file is not None:
         try:
             outfilename = args.file + "_" + str(datetime.datetime.now().timestamp()) + ".evt.out"
             outputFile = open(outfilename, 'w+')
@@ -164,7 +165,7 @@ def main():
 
         try:
             # connecting to the server
-            targetSocket.connect((args.target, args.targetPort))
+            targetSocket.connect((args.target, int(args.targetPort)))
         except socket.error as err:
             logfile.write(logPrefix + "Target server connection failed with error %s\n" % (err))
             sys.exit(logPrefix + "Target server connection failed with error %s" % (err))
@@ -252,7 +253,25 @@ def main():
             if outputFile is not None:
                 outputFile.write(packetContent)
             if targetSocket is not None:
-                targetSocket.send(packetContent.encode())
+                try:
+                    targetSocket.send(packetContent.encode())
+                # Prepare socket to send
+                except:
+                    targetSocket = None
+                    if args.target is not None:
+                        try:
+                            targetSocket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                        except socket.error as err:
+                            logfile.write(logPrefix + " Socket creation failed with error %s\n" % (err))
+                            sys.exit(logPrefix + " Socket creation failed with error %s" % (err))
+
+                        try:
+                            # connecting to the server
+                            targetSocket.connect((args.target, int(args.targetPort)))
+                            targetSocket.send(packetContent.encode())
+                        except socket.error as err:
+                            logfile.write(logPrefix + "Target server connection failed with error %s\n" % (err))
+                            sys.exit(logPrefix + "Target server connection failed with error %s" % (err))
 
     logfile.write(logPrefix + "%s events collected.\n" % (evtCount))
 
